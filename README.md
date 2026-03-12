@@ -695,6 +695,12 @@ We welcome contributions! CLI-Anything is designed to be extensible:
 - **Plugin enhancements** — New commands, phase improvements, better validation
 - **Test coverage** — More E2E scenarios, edge cases, workflow tests
 
+### Limitations
+
+- **Requires strong foundation models** — CLI-Anything relies on frontier-class models (e.g., Claude Opus 4.6, Claude Sonnet 4.6, GPT-5.4) for reliable harness generation. Weaker or smaller models may produce incomplete or incorrect CLIs that require significant manual correction.
+- **Relies on available source code** — The 7-phase pipeline analyzes and generates from source code. When the target software only provides compiled binaries that require decompilation, harness quality and coverage will degrade substantially.
+- **May require iterative refinement** — A single `/cli-anything` run may not fully cover all capabilities. Running `/refine` one or more times is often needed to push the CLI's performance and coverage to production quality.
+
 ### Roadmap
 
 - [ ] Support for more application categories (CAD, DAW, IDE, EDA, scientific tools)
