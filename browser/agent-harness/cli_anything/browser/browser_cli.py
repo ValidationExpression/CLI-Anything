@@ -30,6 +30,7 @@ from cli_anything.browser.utils import domshell_backend as backend
 _session: Optional[Session] = None
 _json_output = False
 _repl_mode = False
+_availability_cached: Optional[tuple[bool, str]] = None  # Cache for REPL mode
 
 
 def get_session() -> Session:
@@ -110,12 +111,15 @@ def cli(ctx, use_json, use_daemon):
 
     Run without a subcommand to enter interactive REPL mode.
     """
-    global _json_output, _session
+    global _json_output, _session, _availability_cached
     _json_output = use_json
 
     # Check DOMShell availability (skip for help/version to allow viewing docs without DOMShell)
+    # Cache the result for REPL mode to avoid repeated npx subprocess spawns
     if '--help' not in sys.argv and '--version' not in sys.argv:
-        available, msg = backend.is_available()
+        if _availability_cached is None:
+            _availability_cached = backend.is_available()
+        available, msg = _availability_cached
         if not available:
             if _json_output:
                 click.echo(json.dumps({"error": msg, "type": "dependency_error"}))
@@ -313,7 +317,7 @@ def act_type(path, text):
     sess = get_session()
     use_daemon = sess.daemon_mode
     result = backend.type_text(path, text, use_daemon=use_daemon)
-    output(result, f"Typed '{text}' into: {path}")
+    output(result, f"Typed into: {path}")
 
 
 # ── Session Commands ─────────────────────────────────────────────
