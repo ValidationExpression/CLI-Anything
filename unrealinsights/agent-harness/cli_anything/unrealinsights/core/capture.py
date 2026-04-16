@@ -5,6 +5,7 @@ Capture orchestration helpers.
 from __future__ import annotations
 
 import os
+import shutil
 import time
 from pathlib import Path
 from typing import Sequence
@@ -167,3 +168,60 @@ def run_capture(
         }
     )
     return result
+
+
+def capture_status(session) -> dict[str, object]:
+    """Return the current tracked capture status."""
+    info = session.capture_info()
+    pid = info.get("pid")
+    info["running"] = backend.is_process_running(pid) if pid else False
+    return info
+
+
+def stop_capture(session, force: bool = False, timeout: float | None = None) -> dict[str, object]:
+    """Stop the currently tracked capture process."""
+    info = capture_status(session)
+    pid = info.get("pid")
+    if not pid:
+        raise RuntimeError("No active capture session is being tracked.")
+
+    termination = backend.terminate_process(int(pid), force=force, timeout=timeout)
+    status = capture_status(session)
+    result = {
+        "termination": termination,
+        "capture": status,
+    }
+    if termination.get("stopped"):
+        session.clear_capture()
+        result["capture"] = session.capture_info()
+        if info.get("trace_path"):
+            session.set_trace(info["trace_path"])
+    return result
+
+
+def snapshot_capture(session, output_trace: str | None = None) -> dict[str, object]:
+    """Create a best-effort copy of the current trace file."""
+    info = capture_status(session)
+    source = info.get("trace_path")
+    if not source:
+        raise RuntimeError("No active capture trace is available to snapshot.")
+
+    source_path = Path(source).expanduser().resolve()
+    if not source_path.is_file():
+        raise RuntimeError(f"Trace file not found: {source_path}")
+
+    if output_trace:
+        output_path = Path(output_trace).expanduser().resolve()
+    else:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        output_path = source_path.with_name(f"{source_path.stem}-snapshot-{timestamp}{source_path.suffix}")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_path, output_path)
+    return {
+        "source_trace": str(source_path),
+        "snapshot_trace": str(output_path),
+        "snapshot_exists": output_path.is_file(),
+        "snapshot_size": output_path.stat().st_size if output_path.is_file() else None,
+        "capture_running": info.get("running", False),
+    }

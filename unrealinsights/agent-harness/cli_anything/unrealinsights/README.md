@@ -43,6 +43,21 @@ cli-anything-unrealinsights --json backend ensure-insights `
 # Bind a trace file for the current session
 cli-anything-unrealinsights trace set D:\captures\session.utrace
 
+# Start a background capture session and keep it running
+cli-anything-unrealinsights --json capture start `
+  --project 'D:\Projects\MyGame\MyGame.uproject' `
+  --engine-root 'D:\Program Files\Epic Games\UE_5.5' `
+  --output-trace D:\captures\live_session.utrace
+
+# Check current capture status
+cli-anything-unrealinsights --json capture status
+
+# Create a best-effort snapshot without ending the session
+cli-anything-unrealinsights --json capture snapshot D:\captures\live_snapshot.utrace
+
+# Stop the tracked capture session
+cli-anything-unrealinsights --json capture stop
+
 # Export threads
 cli-anything-unrealinsights --json -t D:\captures\session.utrace export threads D:\out\threads.csv
 
@@ -76,6 +91,10 @@ cli-anything-unrealinsights
   - `info`
 - `capture`
   - `run`
+  - `start`
+  - `status`
+  - `stop`
+  - `snapshot`
 - `export`
   - `threads`
   - `timers`
@@ -133,6 +152,24 @@ Notes:
 - `--engine-root` accepts either the UE install root or its `Engine` subdirectory.
 - If `target_exe` is omitted, `capture run` resolves `UnrealEditor.exe` from `--engine-root`.
 - The original explicit `target_exe` path remains supported.
+
+## Continuous AI-Driven Capture
+
+For longer-running sessions, prefer this loop:
+
+```powershell
+cli-anything-unrealinsights --json capture start --project ... --engine-root ...
+cli-anything-unrealinsights --json capture status
+cli-anything-unrealinsights --json capture snapshot
+cli-anything-unrealinsights --json capture stop
+```
+
+Behavior:
+
+- `capture start` launches the target in the background and persists the tracked PID/trace/session metadata
+- `capture status` reads the persisted session state and reports whether the process is still running and how large the trace has grown
+- `capture snapshot` creates a best-effort copy of the current `.utrace` without requiring you to end the session first
+- `capture stop` performs a best-effort stop of the tracked process tree launched by the harness
 
 ## Export Filters
 

@@ -47,6 +47,7 @@ def _cli_env():
     env = os.environ.copy()
     pythonpath = env.get("PYTHONPATH", "")
     env["PYTHONPATH"] = HARNESS_ROOT if not pythonpath else f"{HARNESS_ROOT}{os.pathsep}{pythonpath}"
+    env["CLI_ANYTHING_UNREALINSIGHTS_STATE_DIR"] = os.path.join(HARNESS_ROOT, ".tmp_state")
     return env
 
 

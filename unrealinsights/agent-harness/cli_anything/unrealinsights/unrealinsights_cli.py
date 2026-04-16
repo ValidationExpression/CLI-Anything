@@ -14,9 +14,12 @@ import click
 from cli_anything.unrealinsights import __version__
 from cli_anything.unrealinsights.core.capture import (
     DEFAULT_CHANNELS,
+    capture_status,
     normalize_trace_output_path,
     resolve_capture_target,
     run_capture,
+    snapshot_capture,
+    stop_capture,
 )
 from cli_anything.unrealinsights.core.export import execute_export, execute_response_file
 from cli_anything.unrealinsights.core.session import UnrealInsightsSession
@@ -35,7 +38,7 @@ def _get_session(ctx: click.Context) -> UnrealInsightsSession:
     ctx.ensure_object(dict)
     session = ctx.obj.get("session")
     if session is None:
-        session = UnrealInsightsSession()
+        session = UnrealInsightsSession.load()
         ctx.obj["session"] = session
     return session
 
@@ -152,6 +155,41 @@ def _human_capture_result(data: dict[str, object]):
             click.echo(f"Trace size:   {format_size(data['trace_size'])}")
     else:
         click.echo(f"PID:          {data['pid']}")
+
+
+def _human_capture_status(data: dict[str, object]):
+    if not data.get("active"):
+        click.echo("No tracked capture session.")
+        return
+    click.echo(f"PID:          {data.get('pid')}")
+    click.echo(f"Running:      {'yes' if data.get('running') else 'no'}")
+    click.echo(f"Target exe:   {data.get('target_exe')}")
+    if data.get("project_path"):
+        click.echo(f"Project:      {data['project_path']}")
+    if data.get("engine_root"):
+        click.echo(f"Engine root:  {data['engine_root']}")
+    click.echo(f"Trace:        {data.get('trace_path')}")
+    click.echo(f"Trace exists: {'yes' if data.get('trace_exists') else 'no'}")
+    if data.get("trace_exists"):
+        click.echo(f"Trace size:   {format_size(data.get('trace_size'))}")
+    if data.get("started_at"):
+        click.echo(f"Started at:   {data['started_at']}")
+
+
+def _human_snapshot_result(data: dict[str, object]):
+    click.echo(f"Source trace:   {data['source_trace']}")
+    click.echo(f"Snapshot trace: {data['snapshot_trace']}")
+    click.echo(f"Exists:         {'yes' if data['snapshot_exists'] else 'no'}")
+    if data.get("snapshot_exists"):
+        click.echo(f"Size:           {format_size(data.get('snapshot_size'))}")
+    click.echo(f"Capture running:{' yes' if data.get('capture_running') else ' no'}")
+
+
+def _human_stop_result(data: dict[str, object]):
+    termination = data["termination"]
+    click.echo(f"Requested PID: {termination['requested_pid']}")
+    click.echo(f"Stopped:       {'yes' if termination['stopped'] else 'no'}")
+    click.echo(f"Exit code:     {termination.get('exit_code')}")
 
 
 @click.group(invoke_without_command=True)
@@ -315,7 +353,85 @@ def capture_run(ctx, target_exe, project, engine_root, target_args, output_trace
         )
         data.update(launch_info)
         session.set_trace(resolved_output)
+        if wait:
+            session.clear_capture()
+        else:
+            session.set_capture(
+                pid=data.get("pid"),
+                target_exe=resolved_target_exe,
+                target_args=resolved_target_args,
+                trace_path=resolved_output,
+                channels=channels,
+                project_path=launch_info.get("project_path"),
+                engine_root=launch_info.get("engine_root"),
+            )
         _output(ctx, data, _human_capture_result)
+    except Exception as exc:
+        _handle_exc(ctx, exc)
+
+
+@capture_group.command("start")
+@click.argument("target_exe", required=False, type=click.Path(exists=False))
+@click.option("--project", type=click.Path(exists=False), default=None, help="Path to a .uproject file.")
+@click.option(
+    "--engine-root",
+    type=click.Path(exists=False),
+    default=None,
+    help="UE install root such as D:\\Program Files\\Epic Games\\UE_5.5 or its Engine subdir.",
+)
+@click.option("--target-arg", "target_args", multiple=True, help="Argument to pass to the target executable.")
+@click.option("--output-trace", type=click.Path(exists=False), default=None, help="Output .utrace path.")
+@click.option("--channels", default=DEFAULT_CHANNELS, show_default=True, help="Comma-separated UE trace channels.")
+@click.option("--exec-cmd", "exec_cmds", multiple=True, help="Startup UE console command for -ExecCmds.")
+@click.pass_context
+def capture_start(ctx, target_exe, project, engine_root, target_args, output_trace, channels, exec_cmds):
+    """Launch a traced target in the background and track the session."""
+    ctx.invoke(
+        capture_run,
+        target_exe=target_exe,
+        project=project,
+        engine_root=engine_root,
+        target_args=target_args,
+        output_trace=output_trace,
+        channels=channels,
+        exec_cmds=exec_cmds,
+        wait=False,
+        timeout=None,
+    )
+
+
+@capture_group.command("status")
+@click.pass_context
+def capture_status_cmd(ctx):
+    """Show the tracked background capture status."""
+    try:
+        data = capture_status(_get_session(ctx))
+        _output(ctx, data, _human_capture_status)
+    except Exception as exc:
+        _handle_exc(ctx, exc)
+
+
+@capture_group.command("stop")
+@click.option("--force", is_flag=True, help="Force terminate the process tree.")
+@click.option("--timeout", type=float, default=None, help="Optional stop timeout in seconds.")
+@click.pass_context
+def capture_stop_cmd(ctx, force, timeout):
+    """Stop the tracked capture process."""
+    try:
+        data = stop_capture(_get_session(ctx), force=force, timeout=timeout)
+        _output(ctx, data, _human_stop_result)
+    except Exception as exc:
+        _handle_exc(ctx, exc)
+
+
+@capture_group.command("snapshot")
+@click.argument("output_trace", required=False, type=click.Path(exists=False))
+@click.pass_context
+def capture_snapshot_cmd(ctx, output_trace):
+    """Create a best-effort snapshot copy of the current trace."""
+    try:
+        data = snapshot_capture(_get_session(ctx), output_trace=output_trace)
+        _output(ctx, data, _human_snapshot_result)
     except Exception as exc:
         _handle_exc(ctx, exc)
 
@@ -528,9 +644,9 @@ def repl(ctx):
     pt_session = skin.create_prompt_session()
 
     repl_commands = {
-        "backend": "info",
+        "backend": "info|ensure-insights",
         "trace": "set|info",
-        "capture": "run",
+        "capture": "run|start|status|stop|snapshot",
         "export": "threads|timers|timing-events|timer-stats|timer-callees|counters|counter-values",
         "batch": "run-rsp",
         "help": "Show this help",

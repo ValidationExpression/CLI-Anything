@@ -12,6 +12,11 @@ import pytest
 from click.testing import CliRunner
 
 
+@pytest.fixture(autouse=True)
+def _session_state_dir(tmp_path, monkeypatch):
+    monkeypatch.setenv("CLI_ANYTHING_UNREALINSIGHTS_STATE_DIR", str(tmp_path / "state"))
+
+
 class TestOutputUtils:
     def test_output_json(self):
         import io
@@ -260,6 +265,58 @@ class TestCaptureCore:
         assert any(arg.startswith("-tracefile=") for arg in command)
         assert any(arg.startswith("-ExecCmds=") for arg in command)
 
+    def test_capture_status(self):
+        from cli_anything.unrealinsights.core.capture import capture_status
+        from cli_anything.unrealinsights.core.session import UnrealInsightsSession
+
+        session = UnrealInsightsSession()
+        session.set_capture(
+            pid=1234,
+            target_exe="C:/UE/UnrealEditor.exe",
+            target_args=["Project.uproject"],
+            trace_path="C:/trace.utrace",
+            channels="default",
+        )
+        with patch("cli_anything.unrealinsights.core.capture.backend.is_process_running", return_value=True):
+            data = capture_status(session)
+        assert data["active"] is True
+        assert data["running"] is True
+
+    def test_snapshot_capture(self, tmp_path):
+        from cli_anything.unrealinsights.core.capture import snapshot_capture
+        from cli_anything.unrealinsights.core.session import UnrealInsightsSession
+
+        trace = tmp_path / "live.utrace"
+        trace.write_text("trace-data", encoding="utf-8")
+        session = UnrealInsightsSession()
+        session.set_capture(
+            pid=4321,
+            target_exe="C:/UE/UnrealEditor.exe",
+            target_args=[],
+            trace_path=str(trace),
+            channels="default",
+        )
+        with patch("cli_anything.unrealinsights.core.capture.backend.is_process_running", return_value=True):
+            result = snapshot_capture(session)
+        assert Path(result["snapshot_trace"]).is_file()
+
+    def test_stop_capture(self):
+        from cli_anything.unrealinsights.core.capture import stop_capture
+        from cli_anything.unrealinsights.core.session import UnrealInsightsSession
+
+        session = UnrealInsightsSession()
+        session.set_capture(
+            pid=9876,
+            target_exe="C:/UE/UnrealEditor.exe",
+            target_args=[],
+            trace_path="C:/trace.utrace",
+            channels="default",
+        )
+        with patch("cli_anything.unrealinsights.core.capture.backend.terminate_process", return_value={"requested_pid": 9876, "stopped": True, "exit_code": 0}), \
+             patch("cli_anything.unrealinsights.core.capture.backend.is_process_running", return_value=False):
+            result = stop_capture(session)
+        assert result["termination"]["stopped"] is True
+
 
 class TestExportCore:
     @pytest.mark.parametrize(
@@ -429,6 +486,64 @@ class TestCLIJsonErrors:
         data = json.loads(result.output)
         assert data["insights"]["path"].endswith("UnrealInsights.exe")
 
+    @patch("cli_anything.unrealinsights.unrealinsights_cli.capture_status")
+    def test_capture_status_json(self, mock_capture_status):
+        from cli_anything.unrealinsights.unrealinsights_cli import cli
+
+        mock_capture_status.return_value = {
+            "active": True,
+            "pid": 1234,
+            "running": True,
+            "target_exe": "C:/UE/UnrealEditor.exe",
+            "target_args": [],
+            "project_path": "C:/Project.uproject",
+            "engine_root": "C:/UE_5.3",
+            "trace_path": "C:/trace.utrace",
+            "trace_exists": True,
+            "trace_size": 1024,
+            "channels": "default",
+            "started_at": "2026-04-16T00:00:00+00:00",
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--json", "capture", "status"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["running"] is True
+
+    @patch("cli_anything.unrealinsights.unrealinsights_cli.stop_capture")
+    def test_capture_stop_json(self, mock_stop_capture):
+        from cli_anything.unrealinsights.unrealinsights_cli import cli
+
+        mock_stop_capture.return_value = {
+            "termination": {"requested_pid": 1234, "stopped": True, "exit_code": 0},
+            "capture": {"active": False},
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--json", "capture", "stop"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["termination"]["stopped"] is True
+
+    @patch("cli_anything.unrealinsights.unrealinsights_cli.snapshot_capture")
+    def test_capture_snapshot_json(self, mock_snapshot_capture):
+        from cli_anything.unrealinsights.unrealinsights_cli import cli
+
+        mock_snapshot_capture.return_value = {
+            "source_trace": "C:/trace.utrace",
+            "snapshot_trace": "C:/trace-snapshot.utrace",
+            "snapshot_exists": True,
+            "snapshot_size": 2048,
+            "capture_running": True,
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--json", "capture", "snapshot"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert data["snapshot_exists"] is True
+
 
 class TestREPLSessionState:
     def test_trace_set_then_info_in_repl(self):
@@ -496,3 +611,51 @@ class TestCaptureCLIConvenience:
         mock_run_capture.assert_called_once()
         _, kwargs = mock_run_capture.call_args
         assert kwargs["target_args"][0] == str(project.resolve())
+
+    @patch("cli_anything.unrealinsights.unrealinsights_cli.run_capture")
+    def test_capture_start_persists_background_session(self, mock_run_capture, tmp_path):
+        from cli_anything.unrealinsights.unrealinsights_cli import cli
+        from cli_anything.unrealinsights.core.session import UnrealInsightsSession
+
+        editor = tmp_path / "UE_5.5" / "Engine" / "Binaries" / "Win64" / "UnrealEditor.exe"
+        editor.parent.mkdir(parents=True)
+        editor.write_text("x", encoding="utf-8")
+        project = tmp_path / "Project" / "MyGame.uproject"
+        project.parent.mkdir(parents=True)
+        project.write_text("{}", encoding="utf-8")
+
+        mock_run_capture.return_value = {
+            "command": [str(editor.resolve()), str(project.resolve()), "-trace=default"],
+            "waited": False,
+            "timed_out": False,
+            "exit_code": None,
+            "stdout": None,
+            "stderr": None,
+            "pid": 2468,
+            "target_exe": str(editor.resolve()),
+            "target_args": [str(project.resolve())],
+            "trace_path": str((tmp_path / "capture.utrace").resolve()),
+            "channels": "default",
+            "trace_exists": False,
+            "trace_size": None,
+            "succeeded": True,
+        }
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "--json",
+                "capture",
+                "start",
+                "--project",
+                str(project),
+                "--engine-root",
+                str(tmp_path / "UE_5.5"),
+                "--output-trace",
+                str(tmp_path / "capture.utrace"),
+            ],
+        )
+        assert result.exit_code == 0
+        session = UnrealInsightsSession.load()
+        assert session.capture_pid == 2468

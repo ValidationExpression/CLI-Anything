@@ -2,7 +2,7 @@
 
 ## Test Inventory Plan
 
-- `test_core.py`: 39 unit tests planned
+- `test_core.py`: 46 unit tests planned
 - `test_full_e2e.py`: 10 E2E tests planned
 
 ## Unit Test Plan
@@ -19,7 +19,8 @@
 - Validate traced target command construction
 - Validate `-ExecCmds=` joining semantics
 - Validate `--project + --engine-root` convenience resolution
-- Planned tests: 8
+- Validate tracked capture status, snapshot, and stop flows
+- Planned tests: 11
 
 ### `core/export.py`
 - Validate exporter command strings for all supported exporters
@@ -33,7 +34,8 @@
 - Validate JSON error payloads when trace/backend requirements are missing
 - Validate REPL session trace state
 - Validate capture convenience-layer argument handling
-- Planned tests: 7
+- Validate `capture status`, `capture stop`, and `capture snapshot` JSON flows
+- Planned tests: 10
 
 ## E2E Test Plan
 
@@ -92,7 +94,7 @@ cli-anything-unrealinsights --json backend info
 
 ### Result summary
 
-- `test_core.py`: 39 passed
+- `test_core.py`: 46 passed
 - `test_full_e2e.py`: 1 passed, 9 skipped
 - Manual smoke: installed entrypoint resolved local UE 5.5 binaries successfully
 
@@ -111,7 +113,7 @@ cli-anything-unrealinsights --json backend info
 platform win32 -- Python 3.11.9, pytest-9.0.3, pluggy-1.6.0 -- C:\Users\aimidi\AppData\Local\Programs\Python\Python311\python.exe
 cachedir: .pytest_cache
 rootdir: D:\code\D5\CLI-Anything-unrealinsights\unrealinsights\agent-harness
-collecting ... collected 39 items
+collecting ... collected 46 items
 
 cli_anything/unrealinsights/tests/test_core.py::TestOutputUtils::test_output_json PASSED [  3%]
 cli_anything/unrealinsights/tests/test_core.py::TestOutputUtils::test_output_table_empty PASSED [  7%]
@@ -146,7 +148,7 @@ cli_anything/unrealinsights/tests/test_core.py::TestCLIJsonErrors::test_capture_
 cli_anything/unrealinsights/tests/test_core.py::TestREPLSessionState::test_trace_set_then_info_in_repl PASSED [ 99%]
 cli_anything/unrealinsights/tests/test_core.py::TestCaptureCLIConvenience::test_capture_run_with_project_and_engine_root PASSED [100%]
 
-============================= 39 passed in 0.52s ==============================
+============================= 46 passed in 0.28s ==============================
 
 ============================= test session starts =============================
 platform win32 -- Python 3.11.9, pytest-9.0.3, pluggy-1.6.0 -- C:\Users\aimidi\AppData\Local\Programs\Python\Python311\python.exe

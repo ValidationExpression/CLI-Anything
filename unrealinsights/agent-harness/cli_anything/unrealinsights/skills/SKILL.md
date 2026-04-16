@@ -62,6 +62,22 @@ cli-anything-unrealinsights --json capture run `
   --target-arg 'D:\Projects\MyGame\MyGame.uproject'
 ```
 
+### Continuous capture session control
+
+```powershell
+cli-anything-unrealinsights --json capture start `
+  --project 'D:\Projects\MyGame\MyGame.uproject' `
+  --engine-root 'D:\Program Files\Epic Games\UE_5.5' `
+  --output-trace D:\captures\live_session.utrace
+
+cli-anything-unrealinsights --json capture status
+cli-anything-unrealinsights --json capture snapshot D:\captures\live_snapshot.utrace
+cli-anything-unrealinsights --json capture stop
+```
+
+This is the preferred flow when an agent needs to start profiling now and stop
+or snapshot later in a follow-up turn.
+
 ### Offline exporters
 
 ```powershell
@@ -94,9 +110,19 @@ cli-anything-unrealinsights --json -t D:\captures\session.utrace batch run-rsp D
   - `trace_exists`
   - `trace_size`
   - `pid` or `exit_code`
+- Continuous capture status returns:
+  - `pid`
+  - `running`
+  - `target_exe`
+  - `project_path`
+  - `trace_path`
+  - `trace_size`
+  - `started_at`
 
 ## Notes
 
 - v1 is Windows-first.
 - v1 supports file-mode capture orchestration only.
 - v1 does not control already-running UE instances or browse trace stores.
+- `capture stop` is a best-effort stop of the harness-launched process tree.
+- `capture snapshot` is a best-effort filesystem snapshot of the active trace.
