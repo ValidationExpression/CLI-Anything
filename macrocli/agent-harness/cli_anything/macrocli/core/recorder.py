@@ -161,10 +161,10 @@ class RecordedStep:
 # ── Window detection ──────────────────────────────────────────────────────────
 
 def _get_active_window_at(x: int, y: int) -> tuple[str, Optional[dict]]:
-    """Return (title, bounds) of the topmost window containing point (x, y).
+    """Return (app_name, bounds) of the currently focused window.
 
-    Uses wmctrl -lG to list all windows with geometry.
-    Returns ("", None) if not found or wmctrl unavailable.
+    Uses xdotool getwindowfocus — reliable, no text parsing of hostnames,
+    works regardless of hostname format.
     """
     import shutil
     import subprocess
@@ -174,51 +174,50 @@ def _get_active_window_at(x: int, y: int) -> tuple[str, Optional[dict]]:
     if "DISPLAY" not in env:
         env["DISPLAY"] = ":0"
 
-    if not shutil.which("wmctrl"):
+    if not shutil.which("xdotool"):
         return "", None
 
     try:
-        r = subprocess.run(
-            ["wmctrl", "-lG"], capture_output=True, text=True, env=env, timeout=2
+        # Get geometry of focused window
+        gr = subprocess.run(
+            ["xdotool", "getwindowfocus", "getwindowgeometry", "--shell"],
+            capture_output=True, text=True, env=env, timeout=2
         )
+        geo = {}
+        for line in gr.stdout.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                geo[k.strip()] = v.strip()
+
+        wx = int(geo.get("X", 0))
+        wy = int(geo.get("Y", 0))
+        ww = int(geo.get("WIDTH", 0))
+        wh = int(geo.get("HEIGHT", 0))
+        wid = geo.get("WINDOW", "")
+
+        if not wid or ww == 0 or wh == 0:
+            return "", None
+
+        # Get window title
+        nr = subprocess.run(
+            ["xdotool", "getwindowname", wid],
+            capture_output=True, text=True, env=env, timeout=2
+        )
+        full_title = nr.stdout.strip()
+
+        # Extract app name: last segment after " - "
+        # e.g. "macrocli.txt (/tmp) - gedit" → "gedit"
+        # Plain titles (e.g. "Terminal") are returned as-is
+        if " - " in full_title:
+            app_name = full_title.split(" - ")[-1].strip()
+        else:
+            app_name = full_title.strip()
+
+        bounds = {"x": wx, "y": wy, "width": ww, "height": wh}
+        return app_name, bounds
+
     except Exception:
         return "", None
-
-    # wmctrl -lG format: wid  desktop  x  y  w  h  host  title
-    candidates = []
-    for line in r.stdout.splitlines():
-        parts = line.split(None, 7)   # wid desktop x y w h host title(rest)
-        if len(parts) < 8:
-            continue
-        try:
-            wx, wy = int(parts[2]), int(parts[3])
-            ww, wh = int(parts[4]), int(parts[5])
-            title = parts[7]          # everything after hostname
-            if title in ("", "Desktop"):
-                continue
-            if wx <= x <= wx + ww and wy <= y <= wy + wh:
-                candidates.append((wx, wy, ww, wh, title))
-        except ValueError:
-            continue
-
-    if not candidates:
-        return "", None
-
-    # Take the last match (topmost in stacking order from wmctrl output)
-    wx, wy, ww, wh, title = candidates[-1]
-    # wmctrl -lG title format: "<hostname> <actual title>"
-    # Strip just the hostname (first word)
-    parts = title.split(" ", 1)
-    title = parts[1] if len(parts) > 1 else title
-
-    # Use a partial match-friendly fragment: last segment after " - "
-    # e.g. "macrocli_final.txt (/tmp) - gedit" → "gedit"
-    if " - " in title:
-        app_name = title.split(" - ")[-1].strip()
-    else:
-        app_name = title.strip()
-
-    return app_name, {"x": wx, "y": wy, "width": ww, "height": wh}
 
 
 # ── Template capture ──────────────────────────────────────────────────────────
