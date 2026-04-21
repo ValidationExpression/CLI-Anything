@@ -519,8 +519,14 @@ class MacroRecorder:
 
     # ── YAML output ───────────────────────────────────────────────────────────
 
-    def to_yaml(self) -> str:
-        """Generate macro YAML from recorded steps."""
+    def to_yaml(self, parameters: Optional[dict] = None) -> str:
+        """Generate macro YAML from recorded steps.
+
+        Args:
+            parameters: Dict of {param_name: spec} built by
+                        apply_parameterization(). If None, all type_text
+                        values remain hardcoded.
+        """
         steps = [s.to_step_dict() for s in self._steps if s.to_step_dict()]
 
         macro = {
@@ -528,7 +534,7 @@ class MacroRecorder:
             "version": "1.0",
             "description": f"Recorded macro: {self.macro_name}",
             "tags": ["recorded", "visual_anchor"],
-            "parameters": {},
+            "parameters": parameters or {},
             "preconditions": [],
             "steps": steps,
             "postconditions": [],
@@ -540,13 +546,64 @@ class MacroRecorder:
                 "recorded": True,
             },
         }
-        return yaml.dump(macro, allow_unicode=True, sort_keys=False, default_flow_style=False)
+        return yaml.dump(macro, allow_unicode=True, sort_keys=False,
+                         default_flow_style=False)
 
-    def save(self, output_path: Optional[str] = None) -> str:
+    def save(self, output_path: Optional[str] = None,
+             parameters: Optional[dict] = None) -> str:
         """Write the generated YAML to a file. Returns the path."""
         if output_path is None:
             output_path = str(self.output_dir / f"{self.macro_name}.yaml")
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-        Path(output_path).write_text(self.to_yaml(), encoding="utf-8")
+        Path(output_path).write_text(
+            self.to_yaml(parameters=parameters), encoding="utf-8"
+        )
         print(f"[recorder] Saved macro to: {output_path}", flush=True)
         return output_path
+
+    # ── Parameterization ──────────────────────────────────────────────────────
+
+    def get_type_steps(self) -> list[tuple[int, "RecordedStep"]]:
+        """Return (list_index, step) for every non-empty type_text step."""
+        return [
+            (i, s) for i, s in enumerate(self._steps)
+            if s.kind == "type" and s.text.strip()
+        ]
+
+    def apply_parameterization(
+        self, assignments: dict[int, str]
+    ) -> dict[str, dict]:
+        """Replace type_text values with ${param} placeholders in-place.
+
+        Args:
+            assignments: {list_index: param_name} for steps to parameterize.
+                         Steps not present keep their hardcoded value.
+
+        Returns:
+            parameters block ready to pass into to_yaml().
+        """
+        parameters: dict[str, dict] = {}
+        for idx, param_name in assignments.items():
+            step = self._steps[idx]
+            original = step.text
+            step.text = f"${{{param_name}}}"
+
+            # Infer type from the original value
+            ptype = "string"
+            try:
+                int(original)
+                ptype = "integer"
+            except ValueError:
+                try:
+                    float(original)
+                    ptype = "float"
+                except ValueError:
+                    pass
+
+            parameters[param_name] = {
+                "type": ptype,
+                "required": True,
+                "description": f"Value typed at step {idx + 1}",
+                "example": original,
+            }
+        return parameters

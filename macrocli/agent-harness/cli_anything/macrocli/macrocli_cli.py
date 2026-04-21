@@ -18,6 +18,7 @@ Usage (REPL):
 import sys
 import os
 import json
+from pathlib import Path
 import click
 from typing import Optional
 
@@ -432,14 +433,32 @@ def macro_define(name, output):
               help="Directory to write <name>.yaml and <name>_templates/.")
 @click.option("--timeout", default=0, type=float,
               help="Auto-stop after N seconds (0 = wait for Ctrl+Alt+S).")
+@click.option("--parameterize", "do_parameterize", is_flag=True,
+              help="After recording, interactively choose which typed values "
+                   "become CLI parameters.")
+@click.option("--auto-parameterize", "do_auto_param", is_flag=True,
+              help="After recording, use Gemini to automatically suggest "
+                   "parameter names (requires --api-key or GEMINI_API_KEY).")
+@click.option("--api-key", default=None, envvar="GEMINI_API_KEY",
+              help="Gemini API key for --auto-parameterize.")
 @handle_error
-def macro_record(name, output_dir, timeout):
+def macro_record(name, output_dir, timeout, do_parameterize, do_auto_param, api_key):
     """Record GUI interactions and generate a macro YAML.
 
     \b
     Start recording, perform your GUI workflow, then press Ctrl+Alt+S to stop.
-    Each mouse click is saved with a screenshot template so the macro is
-    robust to window position changes.
+    Each click is anchored to the focused window (robust to window movement).
+
+    \b
+    Examples:
+      # Basic recording
+      macro record my_export
+
+      # Record + interactively parameterize typed values
+      macro record my_export --parameterize
+
+      # Record + auto-parameterize with Gemini
+      macro record my_export --auto-parameterize --api-key $GEMINI_API_KEY
 
     Requires: pip install mss Pillow pynput
     """
@@ -449,6 +468,13 @@ def macro_record(name, output_dir, timeout):
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
 
+    if do_parameterize and do_auto_param:
+        click.echo(
+            "Error: --parameterize and --auto-parameterize are mutually exclusive.",
+            err=True,
+        )
+        sys.exit(1)
+
     recorder = MacroRecorder(macro_name=name, output_dir=output_dir)
 
     if not _json_output:
@@ -456,7 +482,6 @@ def macro_record(name, output_dir, timeout):
 
     try:
         recorder.record(timeout_s=timeout if timeout > 0 else None)
-        yaml_path = recorder.save()
     except Exception as e:
         if _json_output:
             output({"error": str(e), "success": False})
@@ -466,20 +491,200 @@ def macro_record(name, output_dir, timeout):
             sys.exit(1)
         return
 
+    # ── Parameterization phase ────────────────────────────────────────────────
+    parameters = None
+    type_steps = recorder.get_type_steps()
+
+    if do_auto_param and type_steps:
+        try:
+            from cli_anything.macrocli.core.parameterize import (
+                gemini_suggest_parameters,
+                interactive_parameterize,
+            )
+            if not _json_output:
+                click.echo(f"\nAsking Gemini to suggest parameters for "
+                           f"{len(type_steps)} type_text step(s)...")
+            suggestions = gemini_suggest_parameters(
+                type_steps, api_key=api_key
+            )
+            if suggestions and not _json_output:
+                click.echo("  Gemini suggestions:")
+                for idx, pname in suggestions.items():
+                    step = recorder._steps[idx]
+                    click.echo(f"    step {idx+1} {step.text!r} → ${{{pname}}}")
+                click.echo()
+                # Still allow user to confirm/adjust
+                confirmed = interactive_parameterize(
+                    [(i, s) for i, s in type_steps if i in suggestions],
+                    existing_params=set(),
+                )
+                # For steps Gemini suggested but user skipped, remove them
+                final = {i: n for i, n in suggestions.items() if i in confirmed}
+                # For steps user renamed, use their name
+                final.update(confirmed)
+                parameters = recorder.apply_parameterization(final)
+            elif not suggestions and not _json_output:
+                click.echo("  Gemini found no values to parameterize.")
+        except Exception as e:
+            click.echo(f"  Warning: Gemini parameterization failed: {e}", err=True)
+            click.echo("  Falling back to interactive mode...")
+            do_parameterize = True
+
+    if do_parameterize and type_steps:
+        from cli_anything.macrocli.core.parameterize import interactive_parameterize
+        assignments = interactive_parameterize(type_steps)
+        if assignments:
+            parameters = recorder.apply_parameterization(assignments)
+
+    try:
+        yaml_path = recorder.save(parameters=parameters)
+    except Exception as e:
+        if _json_output:
+            output({"error": str(e), "success": False})
+        else:
+            click.echo(f"Error saving macro: {e}", err=True)
+        if not _repl_mode:
+            sys.exit(1)
+        return
+
     if _json_output:
         output({
             "success": True,
             "yaml_path": yaml_path,
             "steps": len(recorder._steps),
+            "parameters": list((parameters or {}).keys()),
             "templates_dir": str(recorder.templates_dir),
         })
     else:
         click.echo(f"✓ Saved {len(recorder._steps)} steps to: {yaml_path}")
+        if parameters:
+            click.echo(f"  Parameters: {', '.join(parameters.keys())}")
         click.echo(f"  Templates: {recorder.templates_dir}/")
         click.echo(
-            "\n  Next: register the macro in macro_definitions/manifest.yaml\n"
-            "  or run it directly with: macro run --macro-file " + yaml_path
+            "\n  Run it with:\n"
+            f"  macro run {name} --macro-file {yaml_path}"
+            + (
+                "".join(f" --param {k}=<value>" for k in (parameters or {}))
+                if parameters else ""
+            )
         )
+
+
+@macro.command("parameterize")
+@click.argument("yaml_file")
+@click.option("--auto", "do_auto", is_flag=True,
+              help="Use Gemini to suggest parameter names automatically.")
+@click.option("--api-key", default=None, envvar="GEMINI_API_KEY",
+              help="Gemini API key for --auto.")
+@handle_error
+def macro_parameterize(yaml_file, do_auto, api_key):
+    """Interactively parameterize typed values in an existing macro YAML.
+
+    \b
+    Finds all hardcoded type_text steps in the file and lets you choose
+    which values become CLI parameters (e.g. ${output_path}).
+
+    \b
+    Examples:
+      macro parameterize /tmp/recording/my_export.yaml
+      macro parameterize my_export.yaml --auto --api-key $GEMINI_API_KEY
+    """
+    from cli_anything.macrocli.core.parameterize import (
+        parameterize_yaml_file,
+        gemini_suggest_parameters,
+        interactive_parameterize,
+        _YamlTypeStep,
+    )
+
+    p = Path(yaml_file)
+    if not p.is_file():
+        click.echo(f"Error: file not found: {yaml_file}", err=True)
+        if not _repl_mode:
+            sys.exit(1)
+        return
+
+    if do_auto:
+        # Load the file, extract type_text steps, ask Gemini, then apply
+        import yaml as _yaml
+        with open(p, encoding="utf-8") as f:
+            macro_dict = _yaml.safe_load(f)
+
+        steps = macro_dict.get("steps") or []
+        type_steps_raw = [
+            (i, s) for i, s in enumerate(steps)
+            if isinstance(s, dict)
+            and s.get("action") == "type_text"
+            and not s.get("params", {}).get("text", "").startswith("${")
+        ]
+        if not type_steps_raw:
+            click.echo("No hardcoded type_text steps found.")
+            return
+
+        wrapped = [(i, _YamlTypeStep(i, s)) for i, s in type_steps_raw]
+
+        try:
+            click.echo(f"Asking Gemini to suggest parameters for "
+                       f"{len(wrapped)} type_text step(s)...")
+            suggestions = gemini_suggest_parameters(wrapped, api_key=api_key)
+        except Exception as e:
+            click.echo(f"Gemini failed: {e}\nFalling back to interactive.", err=True)
+            suggestions = {}
+            do_auto = False
+
+        if suggestions:
+            click.echo("  Suggestions:")
+            for idx, pname in suggestions.items():
+                w = next(w for i, w in wrapped if i == idx)
+                click.echo(f"    step {idx+1} {w.text!r} → ${{{pname}}}")
+            click.echo()
+
+        # Let user confirm (pre-fill Gemini suggestions as defaults)
+        existing = set((macro_dict.get("parameters") or {}).keys())
+        confirmed = interactive_parameterize(
+            [(i, w) for i, w in wrapped if i in suggestions],
+            existing_params=existing,
+        )
+        final = {**suggestions, **confirmed}
+
+        if not final:
+            click.echo("No parameters applied.")
+            return
+
+        # Apply and save
+        import yaml as _yaml
+        from cli_anything.macrocli.core.recorder import MacroRecorder
+        parameters: dict = dict(macro_dict.get("parameters") or {})
+        for idx, param_name in final.items():
+            w = next(w for i, w in wrapped if i == idx)
+            original = w.text
+            w.apply(param_name)
+            ptype = "string"
+            try:
+                int(original); ptype = "integer"
+            except ValueError:
+                try:
+                    float(original); ptype = "float"
+                except ValueError:
+                    pass
+            parameters[param_name] = {
+                "type": ptype, "required": True,
+                "description": f"Value typed at step {idx+1}",
+                "example": original,
+            }
+        macro_dict["parameters"] = parameters
+        with open(p, "w", encoding="utf-8") as f:
+            _yaml.dump(macro_dict, f, allow_unicode=True,
+                       sort_keys=False, default_flow_style=False)
+        if _json_output:
+            output({"success": True, "file": str(p.resolve()),
+                    "parameters": list(final.values())})
+        else:
+            click.echo(f"✓ Updated: {p.resolve()}")
+            click.echo(f"  Parameters added: {', '.join(final.values())}")
+    else:
+        changed = parameterize_yaml_file(yaml_file)
+        if _json_output:
+            output({"success": True, "changed": changed, "file": str(p.resolve())})
 
 
 @macro.command("assist")
